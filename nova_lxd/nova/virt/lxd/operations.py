@@ -579,7 +579,7 @@ class LXDContainerOperations(object):
 
         Returns a InstanceInfo object
         """
-        LOG.debug('get_info called for instance', instance=instance)
+        LOG.info('get_info called for instance', instance=instance)
         try:
             if not self.session.container_defined(instance.name, instance):
                 return hardware.InstanceInfo(state=power_state.NOSTATE)

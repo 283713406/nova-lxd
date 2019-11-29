@@ -27,8 +27,9 @@ from nova import i18n
 from nova import utils
 import os
 import platform
+import pylxd
 from pylxd.deprecated import api
-from pylxd.deprecated import exceptions as lxd_exceptions
+from pylxd import exceptions as lxd_exceptions
 import socket
 
 from oslo_config import cfg
@@ -46,11 +47,13 @@ LOG = logging.getLogger(__name__)
 class LXDHost(object):
 
     def __init__(self):
-        self.lxd = api.API()
+        # self.lxd = api.API()
+        # self.lxd = pylxd.client()
+        self.client = None
 
     def get_available_resource(self, nodename):
         LOG.debug('In get_available_resource')
-
+        # import pdb; pdb.set_trace()
         local_cpu_info = self._get_cpuinfo()
         cpu_topology = local_cpu_info['topology']
         vcpus = (int(cpu_topology['cores']) *
@@ -191,12 +194,9 @@ class LXDHost(object):
 
     def init_host(self, host):
         LOG.debug('Host check')
+        # import pdb; pdb.set_trace()
         try:
-            if not self.lxd.host_ping():
-                msg = _('Unable to connect to LXD daemon')
-                raise exception.HostNotFound(msg)
-
-            return True
-        except lxd_exceptions.APIError as ex:
-            msg = _('Unable to connect to LXD daemon: %s') % ex
+            self.client = pylxd.Client()
+        except lxd_exceptions.ClientConnectionFailed as e:
+            msg = _("Unable to connect to LXD daemon: {}").format(e)
             raise exception.HostNotFound(msg)

@@ -24,19 +24,18 @@ import socket
 from oslo_config import cfg
 from oslo_log import log as logging
 
-
-from nova_lxd.nova.virt.lxd import container_firewall
-from nova_lxd.nova.virt.lxd import container_snapshot
-from nova_lxd.nova.virt.lxd import host
-from nova_lxd.nova.virt.lxd import migrate
-from nova_lxd.nova.virt.lxd import operations as container_ops
-from nova_lxd.nova.virt.lxd import vif as lxd_vif
+from ..lxd import container_firewall
+from ..lxd import container_snapshot
+from ..lxd import host
+from ..lxd import migrate
+from ..lxd import operations as container_ops
+from ..lxd import vif as lxd_vif
 
 _ = i18n._
 
 lxd_opts = [
     cfg.StrOpt('root_dir',
-               default='/var/lib/lxd/',
+               default='/var/snap/lxd/common/lxd/',
                help='Default LXD directory'),
     cfg.IntOpt('timeout',
                default=-1,

@@ -28,10 +28,11 @@ from oslo_service import loopingcall
 from oslo_utils import excutils
 
 from pylxd.deprecated import api
-from pylxd.deprecated import exceptions as lxd_exceptions
+from pylxd import exceptions as lxd_exceptions
 import six
+import pylxd
 
-from nova_lxd.nova.virt.lxd import constants
+from ..lxd import constants
 
 _ = i18n._
 _LE = i18n._LE
@@ -78,9 +79,9 @@ class LXDAPISession(object):
         """
         try:
             if host:
-                return api.API(host=host)
+                return pylxd.Client()
             else:
-                return api.API()
+                return pylxd.Client()
         except Exception as ex:
             # notify the compute host that the connection failed
             # via an rpc call
@@ -106,7 +107,11 @@ class LXDAPISession(object):
         LOG.debug('container_list called')
         try:
             client = self.get_session()
-            return client.container_list()
+            containers = client.containers.all()
+            for container in containers:
+                LOG.info(_LI("LXD container list: '%s'"), container.name)
+
+            return client.containers.all()
         except lxd_exceptions.APIError as ex:
             msg = _('Failed to communicate with LXD API: %(reason)s') \
                 % {'reason': ex}
@@ -128,7 +133,7 @@ class LXDAPISession(object):
         LOG.debug('container_update called fo instance', instance=instance)
         try:
             client = self.get_session()
-            if not self.container_defined(instance.name, instance):
+            if not client.containers.get(instance.name, instance):
                 msg = _('Instance is not found: %s') % instance.name
                 raise exception.InstanceNotFound(msg)
 
@@ -269,11 +274,12 @@ class LXDAPISession(object):
         :return: True if exists otherwise False
 
         """
-        LOG.debug('container_defined for instance', instance=instance)
+        # LOG.debug('container_defined for instance', instance=instance)
+        LOG.info('container_defined for instance', instance=instance)
         try:
             client = self.get_session()
-            return client.container_defined(instance_name)
-        except lxd_exceptions.APIError as ex:
+            return client.containers.get(instance.name)
+        except lxd_exceptions.LXDAPIException as ex:
             if ex.status_code == 404:
                 return False
             else:
