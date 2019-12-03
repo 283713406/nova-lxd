@@ -47,8 +47,6 @@ LOG = logging.getLogger(__name__)
 class LXDHost(object):
 
     def __init__(self):
-        # self.lxd = api.API()
-        # self.lxd = pylxd.client()
         self.client = None
 
     def get_available_resource(self, nodename):
