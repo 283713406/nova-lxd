@@ -106,13 +106,9 @@ def _network(instance, _, network_info, __):
         # key = devname
         key = str(cfg['bridge'])
         devices[key] = {
-            # 'nictype': 'physical',
-            # 'hwaddr': str(cfg['mac_address']),
-            # 'parent': key,    # vif.LXDGenericDriver().get_vif_devname(vifaddr).replace('tap', 'tin'),
-            # 'type': 'nic'
             'nictype': 'bridged',
-            'hwaddr': 'fe:2b:8c:32:33:8b',
-            'parent': 'lxdbr0',  # vif.LXDGenericDriver().get_vif_devname(vifaddr).replace('tap', 'tin'),
+            'hwaddr': str(cfg['mac_address']),
+            'parent': key,    # vif.LXDGenericDriver().get_vif_devname(vifaddr).replace('tap', 'tin'),
             'type': 'nic'
         }
         host_device = vif.LXDGenericDriver().get_vif_devname(vifaddr)
