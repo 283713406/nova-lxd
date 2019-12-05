@@ -24,9 +24,9 @@ from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import excutils
 
-from nova_lxd.nova.virt.lxd import session
-from nova_lxd.nova.virt.lxd import utils as container_dir
-from nova_lxd.nova.virt.lxd import vif
+from ..lxd import session
+from ..lxd import utils as container_dir
+from ..lxd import vif
 
 _ = i18n._
 _LE = i18n._LE

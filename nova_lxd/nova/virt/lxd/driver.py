@@ -52,6 +52,7 @@ from pylxd import exceptions as lxd_exceptions
 
 from ..lxd import container_firewall
 from ..lxd import common
+from ..lxd import network
 from ..lxd import host
 from ..lxd import storage
 from ..lxd import flavor
@@ -66,6 +67,9 @@ lxd_opts = [
     cfg.StrOpt('root_dir',
                default='/var/snap/lxd/common/lxd/',
                help='Default LXD directory'),
+    cfg.StrOpt('pool',
+               default=None,
+               help='LXD Storage pool to use with LXD >= 2.9'),
     cfg.IntOpt('timeout',
                default=-1,
                help='Default LXD timeout'),
@@ -73,6 +77,9 @@ lxd_opts = [
                default=2,
                help='How often to retry in seconds when a'
                     'request does conflict'),
+    cfg.BoolOpt('allow_live_migration',
+                default=False,
+                help='Determine wheter to allow live migration'),
 ]
 
 CONF = cfg.CONF
@@ -172,6 +179,8 @@ class LXDDriver(driver.ComputeDriver):
         self.virtapi = virtapi
 
         self.vif_driver = lxd_vif.LXDGenericDriver()
+
+        self.network = network.LXDContainerNetwork()
         self.image = image.LXDContainerImage()
         self.container_firewall = container_firewall.LXDContainerFirewall()
         self.host = host.LXDHost()
@@ -192,22 +201,18 @@ class LXDDriver(driver.ComputeDriver):
 
     def list_instances(self):
         LOG.info('container_list called')
-        try:
-            client = self.host.client
-            containers = client.containers.all()
-            for container in containers:
-                LOG.info(_LI("LXD container list: '%s'"), container.name)
+        client = self.host.client
+        containers = client.containers.all()
+        for container in containers:
+            LOG.info(_LI("LXD container list: '%s'"), container.name)
 
-            return [c.name for c in client.containers.all()]
-        except lxd_exceptions.APIError as ex:
-            msg = _('Failed to communicate with LXD API: %(reason)s') \
-                  % {'reason': ex}
-            LOG.error(msg)
-            raise exception.NovaException(msg)
+        return [c.name for c in client.containers.all()]
 
     def plug_vifs(self, instance, network_info):
         """Plug VIFs into networks."""
+        LOG.info("Start plug_vifs")
         for vif in network_info:
+            # LOG.info("vif is: '%s'", vif)
             self.vif_driver.plug(instance, vif)
 
     def unplug_vifs(self, instance, network_info):
@@ -225,14 +230,14 @@ class LXDDriver(driver.ComputeDriver):
               admin_password, network_info=None, block_device_info=None):
         """Create a new lxd container as a nova instance.
 
-                Creating a new container requires a number of steps. First, the
-                image is fetched from glance, if needed. Next, the network is
-                connected. A profile is created in LXD, and then the container
-                is created and started.
+        Creating a new container requires a number of steps. First, the
+        image is fetched from glance, if needed. Next, the network is
+        connected. A profile is created in LXD, and then the container
+        is created and started.
 
-                See `nova.virt.driver.ComputeDriver.spawn` for more
-                information.
-                """
+        See `nova.virt.driver.ComputeDriver.spawn` for more
+        information.
+        """
         msg = ('Spawning container '
                'network_info=%(network_info)s '
                'image_meta=%(image_meta)s '
@@ -271,35 +276,13 @@ class LXDDriver(driver.ComputeDriver):
                 self.host.client, context, image_meta, instance.image_ref)
 
         # Setup the network when creating the lXD container
-        if network_info:
-            timeout = CONF.vif_plugging_timeout
-            if (utils.is_neutron() and timeout):
-                events = [('network-vif-plugged', vif['id'])
-                          for vif in network_info if not vif.get(
-                        'active', True)]
-            else:
-                events = []
-
-            try:
-                with self.virtapi.wait_for_instance_event(
-                        instance, events, deadline=timeout,
-                        error_callback=_neutron_failed_callback):
-                    self.plug_vifs(instance, network_info)
-            except eventlet.timeout.Timeout:
-                LOG.warn("Timeout waiting for vif plugging callback for "
-                         "instance {uuid}"
-                         .format(uuid=instance['name']))
-                if CONF.vif_plugging_is_fatal:
-                    self.destroy(
-                        context, instance, network_info, block_device_info)
-                    raise exception.InstanceDeployFailure(
-                        'Timeout waiting for vif plugging',
-                        instance_id=instance['name'])
+        self.network.setup_network(instance.name, instance, network_info)
 
         # Create an LXD container profile for the nova intsance
         try:
             profile = flavor.to_profile(
                 self.host.client, instance, network_info, block_device_info)
+            LOG.info("LXD container profile is: '%s'", profile)
         except lxd_exceptions.LXDAPIException as e:
             with excutils.save_and_reraise_exception():
                 self.cleanup(
@@ -314,6 +297,9 @@ class LXDDriver(driver.ComputeDriver):
                 'alias': instance.image_ref,
             },
         }
+
+        import pdb; pdb.set_trace()
+        LOG.info("LXD container config is: '%s'", container_config)
         try:
             container = self.host.client.containers.create(
                 container_config, wait=True)
@@ -343,15 +329,16 @@ class LXDDriver(driver.ComputeDriver):
             profile.devices.update(config_drive)
             profile.save()
 
+        import pdb; pdb.set_trace()
         try:
-            self.firewall_driver.setup_basic_filtering(
+            self.container_firewall.firewall_driver.setup_basic_filtering(
                 instance, network_info)
-            self.firewall_driver.instance_filter(
+            self.container_firewall.firewall_driver.instance_filter(
                 instance, network_info)
 
             container.start(wait=True)
 
-            self.firewall_driver.apply_instance_filter(
+            self.container_firewall.firewall_driver.apply_instance_filter(
                 instance, network_info)
         except lxd_exceptions.LXDAPIException:
             with excutils.save_and_reraise_exception():
@@ -381,6 +368,7 @@ class LXDDriver(driver.ComputeDriver):
             # protect it by using a mutex.
             try:
                 container = self.host.client.containers.get(instance.name)
+                LOG.info("LXD instance is: '%s'", container)
                 if container.status != 'Stopped':
                     container.stop(wait=True)
                 container.delete(wait=True)
@@ -410,7 +398,7 @@ class LXDDriver(driver.ComputeDriver):
                 """
         if destroy_vifs:
             self.unplug_vifs(instance, network_info)
-            self.firewall_driver.unfilter_instance(instance, network_info)
+            self.container_firewall.firewall_driver.unfilter_instance(instance, network_info)
 
         lxd_config = self.host.client.host_info
         storage.detach_ephemeral(self.host.client,
@@ -836,11 +824,11 @@ class LXDDriver(driver.ComputeDriver):
                            network_info, disk_info, migrate_data=None):
         for vif in network_info:
             self.vif_driver.plug(instance, vif)
-        self.firewall_driver.setup_basic_filtering(
+        self.container_firewall.firewall_driver.setup_basic_filtering(
             instance, network_info)
-        self.firewall_driver.prepare_instance_filter(
+        self.container_firewall.firewall_driver.prepare_instance_filter(
             instance, network_info)
-        self.firewall_driver.apply_instance_filter(
+        self.container_firewall.firewall_driver.apply_instance_filter(
             instance, network_info)
 
         flavor.to_profile(self.host.client,

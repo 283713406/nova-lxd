@@ -19,12 +19,14 @@ from nova import i18n
 from nova.virt import driver
 from oslo_config import cfg
 from oslo_utils import units
+from oslo_log import log as logging
 
 from ..lxd import common
 from ..lxd import vif
 
 _ = i18n._
 CONF = cfg.CONF
+LOG = logging.getLogger(__name__)
 
 
 def _base_config(instance, _):
@@ -81,123 +83,47 @@ _CONFIG_FILTER_MAP = [
 
 def _root(instance, client, *_):
     """Configure the root disk."""
+    LOG.debug('configure_container_root called for instance',
+              instance=instance)
     device = {'type': 'disk', 'path': '/'}
 
-    # we don't do quotas if the CONF.lxd.pool is set and is dir or lvm, or if
-    # the environment['storage'] is dir or lvm.
-    if CONF.lxd.pool:
-        extensions = client.host_info.get('api_extensions', [])
-        if 'storage' in extensions:
-            device['pool'] = CONF.lxd.pool
-            storage_type = client.storage_pools.get(CONF.lxd.pool).driver
-        else:
-            msg = _("Host does not have storage pool support")
-            raise exception.NovaException(msg)
-    else:
-        storage_type = client.host_info['environment']['storage']
-
+    storage_type = client.host_info['environment']['storage']
     if storage_type in ['btrfs', 'zfs']:
         device['size'] = '{}GB'.format(instance.root_gb)
 
-        specs = instance.flavor.extra_specs
-
-        # Bytes and iops are not separate config options in a container
-        # profile - we let Bytes take priority over iops if both are set.
-        # Align all limits to MiB/s, which should be a sensible middle road.
-        if specs.get('quota:disk_read_iops_sec'):
-            device['limits.read'] = '{}iops'.format(
-                specs['quota:disk_read_iops_sec'])
-        if specs.get('quota:disk_write_iops_sec'):
-            device['limits.write'] = '{}iops'.format(
-                specs['quota:disk_write_iops_sec'])
-
-        if specs.get('quota:disk_read_bytes_sec'):
-            device['limits.read'] = '{}MB'.format(
-                int(specs['quota:disk_read_bytes_sec']) // units.Mi)
-        if specs.get('quota:disk_write_bytes_sec'):
-            device['limits.write'] = '{}MB'.format(
-                int(specs['quota:disk_write_bytes_sec']) // units.Mi)
-
-        minor_quota_defined = ('limits.write' in device or
-                               'limits.read' in device)
-        if specs.get('quota:disk_total_iops_sec') and not minor_quota_defined:
-            device['limits.max'] = '{}iops'.format(
-                specs['quota:disk_total_iops_sec'])
-        if specs.get('quota:disk_total_bytes_sec') and not minor_quota_defined:
-            device['limits.max'] = '{}MB'.format(
-                int(specs['quota:disk_total_bytes_sec']) // units.Mi)
-
     return {'root': device}
-
-
-def _ephemeral_storage(instance, client, __, block_info):
-    instance_attributes = common.InstanceAttributes(instance)
-    ephemeral_storage = driver.block_device_info_get_ephemerals(block_info)
-    if ephemeral_storage:
-        devices = {}
-        for ephemeral in ephemeral_storage:
-            ephemeral_src = os.path.join(
-                instance_attributes.storage_path,
-                ephemeral['virtual_name'])
-            device = {
-                'path': '/mnt',
-                'source': ephemeral_src,
-                'type': 'disk',
-            }
-            if CONF.lxd.pool:
-                extensions = client.host_info.get('api_extensions', [])
-                if 'storage' in extensions:
-                    device['pool'] = CONF.lxd.pool
-                else:
-                    msg = _("Host does not have storage pool support")
-                    raise exception.NovaException(msg)
-            devices[ephemeral['virtual_name']] = device
-        return devices
 
 
 def _network(instance, _, network_info, __):
     if not network_info:
         return
 
+    import pdb; pdb.set_trace()
     devices = {}
     for vifaddr in network_info:
-        cfg = vif.get_config(vifaddr)
-        devname = vif.get_vif_devname(vifaddr)
-        key = devname
+        cfg = vif.LXDGenericDriver().get_config(instance, vifaddr)
+        devname = vif.LXDGenericDriver().get_vif_devname(vifaddr)
+        # key = devname
+        key = str(cfg['bridge'])
         devices[key] = {
-            'nictype': 'physical',
-            'hwaddr': str(cfg['mac_address']),
-            'parent': vif.get_vif_internal_devname(vifaddr),
+            # 'nictype': 'physical',
+            # 'hwaddr': str(cfg['mac_address']),
+            # 'parent': key,    # vif.LXDGenericDriver().get_vif_devname(vifaddr).replace('tap', 'tin'),
+            # 'type': 'nic'
+            'nictype': 'bridged',
+            'hwaddr': 'fe:2b:8c:32:33:8b',
+            'parent': 'lxdbr0',  # vif.LXDGenericDriver().get_vif_devname(vifaddr).replace('tap', 'tin'),
             'type': 'nic'
         }
+        host_device = vif.LXDGenericDriver().get_vif_devname(vifaddr)
+        if host_device:
+            devices[key]['host_name'] = host_device
 
-        specs = instance.flavor.extra_specs
-        # Since LXD does not implement average NIC IO and number of burst
-        # bytes, we take the max(vif_*_average, vif_*_peak) to set the peak
-        # network IO and simply ignore the burst bytes.
-        # Align values to MBit/s (8 * powers of 1000 in this case), having
-        # in mind that the values are recieved in Kilobytes/s.
-        vif_inbound_limit = max(
-            int(specs.get('quota:vif_inbound_average', 0)),
-            int(specs.get('quota:vif_inbound_peak', 0)),
-        )
-        if vif_inbound_limit:
-            devices[key]['limits.ingress'] = '{}Mbit'.format(
-                vif_inbound_limit * units.k * 8 // units.M)
-
-        vif_outbound_limit = max(
-            int(specs.get('quota:vif_outbound_average', 0)),
-            int(specs.get('quota:vif_outbound_peak', 0)),
-        )
-        if vif_outbound_limit:
-            devices[key]['limits.egress'] = '{}Mbit'.format(
-                vif_outbound_limit * units.k * 8 // units.M)
     return devices
 
 
 _DEVICE_FILTER_MAP = [
     _root,
-    _ephemeral_storage,
     _network,
 ]
 
@@ -211,7 +137,7 @@ def to_profile(client, instance, network_info, block_info, update=False):
     """
 
     name = instance.name
-
+    LOG.info("instance name is '%s'", name)
     config = {}
     for f in _CONFIG_FILTER_MAP:
         new = f(instance, client)
@@ -219,6 +145,7 @@ def to_profile(client, instance, network_info, block_info, update=False):
             config.update(new)
 
     devices = {}
+    import pdb; pdb.set_trace()
     for f in _DEVICE_FILTER_MAP:
         new = f(instance, client, network_info, block_info)
         if new:

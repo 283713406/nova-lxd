@@ -120,12 +120,14 @@ class LXDGenericDriver(object):
 
     def plug_bridge(self, instance, vif):
         network = vif['network']
+        LOG.info("network is '%s'", network)
         if (not network.get_meta('multi_host', False) and
                 network.get_meta('should_create_bridge', False)):
+            LOG.info("Start plug_bridge ")
             if network.get_meta('should_create_vlan', False):
                 iface = (CONF.vlan_interface or
                          network.get_meta('bridge_interface'))
-                LOG.debug('Ensuring vlan %(vlan)s and bridge %(bridge)s',
+                LOG.info('Ensuring vlan %(vlan)s and bridge %(bridge)s',
                           {'vlan': network.get_meta('vlan'),
                            'bridge': self.get_bridge_name(vif)},
                           instance=instance)
@@ -135,7 +137,8 @@ class LXDGenericDriver(object):
             else:
                 iface = (CONF.flat_interface or
                          network.get_meta('bridge_interface'))
-                LOG.debug("Ensuring bridge %s",
+                LOG.info("iface is %s", iface)
+                LOG.info("Ensuring bridge %s",
                           self.get_bridge_name(vif), instance=instance)
                 linux_net.LinuxBridgeInterfaceDriver.ensure_bridge(
                     self.get_bridge_name(vif), iface)
